@@ -1,9 +1,15 @@
 import cv2
 import os
+import time
+import tempfile
+import subprocess
 import tkinter as tk
 from tkinter import filedialog
+import pygame
 
 WINDOW_NAME = "Original | Processed"
+
+FFMPEG_EXE = "ffmpeg"
 
 
 def choose_mode():
@@ -43,7 +49,7 @@ def preprocess_frame(frame, mode):
         processed = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         return cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
 
-    elif mode == "blur":
+    if mode == "blur":
         return cv2.GaussianBlur(frame, (9, 9), 0)
 
     return frame
@@ -65,10 +71,38 @@ def ask_restart():
         choice = input("Введите 1 или 0: ").strip()
         if choice == "1":
             return True
-        elif choice == "0":
+        if choice == "0":
             return False
-        else:
-            print("Неверный ввод. Введите 1 или 0.")
+        print("Неверный ввод. Введите 1 или 0.")
+
+
+def extract_audio_to_wav(video_path):
+    temp_dir = tempfile.mkdtemp()
+    audio_path = os.path.join(temp_dir, "temp_audio.wav")
+
+    cmd = [
+        FFMPEG_EXE,
+        "-y",
+        "-i", video_path,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "44100",
+        "-ac", "2",
+        audio_path
+    ]
+
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0 or not os.path.exists(audio_path):
+        return None
+
+    return audio_path
+
+
+def stop_audio():
+    try:
+        pygame.mixer.music.stop()
+    except:
+        pass
 
 
 def run_video(mode, video_path):
@@ -76,12 +110,12 @@ def run_video(mode, video_path):
 
     if not cap.isOpened():
         print("Ошибка: не удалось открыть видеофайл.")
-        return "restart"
+        return
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0:
-        fps = 25
+        fps = 25.0
 
     print(f"\nВыбранный файл: {video_path}")
     print(f"Режим обработки: {mode}")
@@ -89,23 +123,36 @@ def run_video(mode, video_path):
     print(f"Частота кадров (FPS): {fps:.2f}")
     print("Нажми Q, Esc или закрой окно крестиком.\n")
 
-    frame_number = 0
-    delay = max(1, int(1000 / fps))
+    frame_duration = 1.0 / fps
+
+    audio_path = extract_audio_to_wav(video_path)
+    audio_enabled = False
+
+    if audio_path:
+        try:
+            pygame.mixer.init()
+            pygame.mixer.music.load(audio_path)
+            pygame.mixer.music.play()
+            audio_enabled = True
+            print("Аудио успешно запущено.")
+        except Exception as e:
+            print(f"Не удалось воспроизвести аудио: {e}")
+    else:
+        print("Аудиодорожка не найдена или не удалось извлечь звук.")
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
-    exit_reason = "restart"
+    frame_number = 0
+    start_time = time.perf_counter()
 
     while True:
         if is_window_closed(WINDOW_NAME):
             print("Окно закрыто пользователем.")
-            exit_reason = "restart"
             break
 
         ret, frame = cap.read()
         if not ret:
             print("Конец видео или ошибка чтения кадра.")
-            exit_reason = "restart"
             break
 
         frame_number += 1
@@ -125,23 +172,31 @@ def run_video(mode, video_path):
         print(f"Текущий кадр: {frame_number}, Всего кадров: {total_frames}, FPS: {fps:.2f}")
 
         cv2.imshow(WINDOW_NAME, combined)
-        key = cv2.waitKey(delay) & 0xFF
+
+        expected_time = frame_number * frame_duration
+        elapsed = time.perf_counter() - start_time
+        remaining = expected_time - elapsed
+        delay_ms = max(1, int(remaining * 1000))
+
+        key = cv2.waitKey(delay_ms) & 0xFF
 
         if key == 27 or key == ord('q') or key == ord('Q'):
             print("Выход из просмотра по команде пользователя.")
-            exit_reason = "restart"
             break
 
         if is_window_closed(WINDOW_NAME):
             print("Окно закрыто пользователем.")
-            exit_reason = "restart"
             break
 
     cap.release()
     cv2.destroyAllWindows()
-    cv2.waitKey(1)
+    stop_audio()
 
-    return exit_reason
+    if audio_enabled:
+        try:
+            pygame.mixer.quit()
+        except:
+            pass
 
 
 def main():
@@ -153,25 +208,22 @@ def main():
             print("Файл не выбран.")
             if ask_restart():
                 continue
-            else:
-                print("Программа завершена.")
-                break
+            print("Программа завершена.")
+            break
 
         if not os.path.exists(video_path):
             print("Ошибка: файл не найден.")
             if ask_restart():
                 continue
-            else:
-                print("Программа завершена.")
-                break
+            print("Программа завершена.")
+            break
 
         run_video(mode, video_path)
 
         if ask_restart():
             continue
-        else:
-            print("Программа завершена.")
-            break
+        print("Программа завершена.")
+        break
 
 
 if __name__ == "__main__":
